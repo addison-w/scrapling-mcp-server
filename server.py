@@ -109,7 +109,8 @@ def create_starlette_app(debug: bool = False) -> Starlette:
                 write_stream,
                 mcp_server.create_initialization_options(),
             )
-        return Response()  # Return empty response to avoid NoneType error
+            while True:
+                await asyncio.sleep(1)
 
     async def health_check(request: StarletteRequest) -> JSONResponse:
         """Health check endpoint."""
