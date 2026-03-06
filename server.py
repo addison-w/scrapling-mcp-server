@@ -34,17 +34,19 @@ async def fetch_with_scrapling(
     """Fetch page content using scrapling."""
     try:
         from scrapling import StealthyFetcher
+        from markdownify import markdownify as md
 
         page = await StealthyFetcher.async_fetch(url)
+        html = page.html_content
 
         if mode == "markdown":
-            return page.markdown
+            return md(html)
         elif mode == "html":
-            return page.html
+            return html
         elif mode == "text":
-            return page.get_text(separator="\n", strip=True)
+            return page.text
         else:
-            return page.markdown
+            return md(html)
     except Exception as e:
         return f"Error fetching {url}: {str(e)}"
 
