@@ -35,16 +35,16 @@ response_queues: dict[str, asyncio.Queue] = {}
 
 def get_mcp_command():
     """Get the MCP server command based on available packages."""
-    # Try scrapling-fetch-mcp first
-    try:
-        import scrapling_fetch_mcp
+    # scrapling-fetch-mcp is installed as a console script entry point
+    # Check if the command exists in PATH
+    import shutil
 
-        return [sys.executable, "-m", "scrapling_fetch_mcp"]
-    except ImportError:
-        pass
+    scrapling_cmd = shutil.which("scrapling-fetch-mcp")
+    if scrapling_cmd:
+        return [scrapling_cmd]
 
-    # Fallback: use the entry point directly
-    return ["scrapling-fetch-mcp"]
+    # Fallback: try to run via python -m if module supports it
+    return [sys.executable, "-m", "scrapling_fetch_mcp"]
 
 
 @app.on_event("startup")
