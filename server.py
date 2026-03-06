@@ -35,8 +35,7 @@ async def fetch_with_scrapling(
     try:
         from scrapling import StealthyFetcher
 
-        fetcher = StealthyFetcher()
-        page = fetcher.fetch(url)
+        page = await StealthyFetcher.async_fetch(url)
 
         if mode == "markdown":
             return page.markdown
