@@ -190,13 +190,16 @@ async def handle_sse(request: Request):
     client_queue: asyncio.Queue = asyncio.Queue()
     sse_clients.add(client_queue)
 
-    # Send initial endpoint event with session ID
-    session_id = str(asyncio.get_event_loop().time())
+    # Use external URL based on forwarded headers or environment
+    forwarded_proto = request.headers.get("x-forwarded-proto", "https")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get(
+        "host", "scrapling.addisons.app"
+    )
+    endpoint_url = f"{forwarded_proto}://{forwarded_host}/mcp"
 
     async def event_generator():
         try:
-            # Send initial endpoint information
-            endpoint_url = str(request.url)
+            # Send initial endpoint information with correct origin
             yield f"event: endpoint\ndata: {endpoint_url}\n\n"
 
             # Keep connection alive and stream messages
