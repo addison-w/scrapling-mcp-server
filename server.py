@@ -11,7 +11,7 @@ import subprocess
 import sys
 from typing import Optional
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 import httpx
@@ -31,19 +31,18 @@ app.add_middleware(
 mcp_process: Optional[subprocess.Popen] = None
 request_queue: asyncio.Queue = asyncio.Queue()
 response_queues: dict[str, asyncio.Queue] = {}
+# Store for SSE clients
+sse_clients: set[asyncio.Queue] = set()
 
 
 def get_mcp_command():
     """Get the MCP server command based on available packages."""
-    # scrapling-fetch-mcp is installed as a console script entry point
-    # Check if the command exists in PATH
     import shutil
 
     scrapling_cmd = shutil.which("scrapling-fetch-mcp")
     if scrapling_cmd:
         return [scrapling_cmd]
 
-    # Fallback: try to run via python -m if module supports it
     return [sys.executable, "-m", "scrapling_fetch_mcp"]
 
 
@@ -62,10 +61,9 @@ async def startup_event():
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,  # Line buffered
+            bufsize=1,
         )
 
-        # Start background tasks to handle I/O
         asyncio.create_task(read_mcp_output())
         asyncio.create_task(read_mcp_errors())
 
@@ -105,8 +103,15 @@ async def read_mcp_output():
                 request_id = data.get("id")
                 if request_id and request_id in response_queues:
                     await response_queues[request_id].put(data)
-                else:
-                    # Broadcast or log
+
+                # Also broadcast to SSE clients
+                for client_queue in list(sse_clients):
+                    try:
+                        await client_queue.put(data)
+                    except:
+                        pass
+
+                if not request_id:
                     print(f"MCP message: {line.strip()}", file=sys.stderr)
             except json.JSONDecodeError:
                 print(f"MCP stdout: {line.strip()}", file=sys.stderr)
@@ -147,24 +152,81 @@ async def root():
         "name": "Scrapling MCP Server",
         "version": "1.0.0",
         "endpoints": {
-            "mcp_post": "POST /mcp",
-            "mcp_stream": "GET /mcp/stream",
+            "mcp": "GET/POST /mcp (SSE/JSON-RPC)",
             "health": "GET /health",
         },
     }
 
 
-@app.post("/mcp")
-async def mcp_post(request: Request):
+@app.api_route("/mcp", methods=["GET", "POST"])
+async def mcp_endpoint(
+    request: Request,
+    accept: Optional[str] = Header(None),
+):
     """
-    Handle MCP JSON-RPC requests via POST.
-    This is the primary endpoint for MCP tool invocations.
+    Unified MCP endpoint supporting both SSE (GET) and JSON-RPC (POST).
+
+    GET with Accept: text/event-stream -> SSE connection for server-sent events
+    POST with JSON body -> JSON-RPC request/response
     """
     global mcp_process
 
     if not mcp_process or mcp_process.poll() is not None:
         raise HTTPException(status_code=503, detail="MCP server not running")
 
+    # Check if this is an SSE request (GET with Accept: text/event-stream)
+    if request.method == "GET" and accept and "text/event-stream" in accept:
+        return await handle_sse(request)
+
+    # Otherwise handle as JSON-RPC POST
+    if request.method == "POST":
+        return await handle_json_rpc(request)
+
+    raise HTTPException(status_code=405, detail="Method not allowed")
+
+
+async def handle_sse(request: Request):
+    """Handle SSE connection for MCP."""
+    client_queue: asyncio.Queue = asyncio.Queue()
+    sse_clients.add(client_queue)
+
+    # Send initial endpoint event with session ID
+    session_id = str(asyncio.get_event_loop().time())
+
+    async def event_generator():
+        try:
+            # Send initial endpoint information
+            endpoint_url = str(request.url)
+            yield f"event: endpoint\ndata: {endpoint_url}\n\n"
+
+            # Keep connection alive and stream messages
+            while mcp_process and mcp_process.poll() is None:
+                try:
+                    # Wait for messages with timeout
+                    data = await asyncio.wait_for(client_queue.get(), timeout=30.0)
+                    event_data = json.dumps(data)
+                    yield f"event: message\ndata: {event_data}\n\n"
+                except asyncio.TimeoutError:
+                    # Send heartbeat
+                    yield f"event: heartbeat\ndata: {json.dumps({'timestamp': asyncio.get_event_loop().time()})}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sse_clients.discard(client_queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream",
+        },
+    )
+
+
+async def handle_json_rpc(request: Request):
+    """Handle JSON-RPC request via POST."""
     try:
         payload = await request.json()
         request_id = payload.get("id", str(asyncio.get_event_loop().time()))
@@ -194,52 +256,17 @@ async def mcp_post(request: Request):
         raise HTTPException(status_code=500, detail=f"MCP error: {str(e)}")
 
 
-@app.get("/mcp/stream")
-async def mcp_stream():
-    """
-    SSE endpoint for streaming MCP responses.
-    Clients can connect here to receive real-time updates.
-    """
-    global mcp_process
-
-    if not mcp_process or mcp_process.poll() is not None:
-        raise HTTPException(status_code=503, detail="MCP server not running")
-
-    async def event_generator():
-        """Generate SSE events from MCP output."""
-        while mcp_process and mcp_process.poll() is None:
-            try:
-                # Check for any new responses (for broadcast or notifications)
-                await asyncio.sleep(0.1)
-                yield f"data: {json.dumps({'type': 'heartbeat', 'timestamp': asyncio.get_event_loop().time()})}\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-                break
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
-
-
 @app.post("/scrape")
 async def scrape_endpoint(request: Request):
-    """
-    Simple REST endpoint for scraping - easier to test than full MCP.
-    """
+    """Simple REST endpoint for scraping - easier to test than full MCP."""
     try:
         data = await request.json()
         url = data.get("url")
-        mode = data.get("mode", "html")  # html, markdown, text
+        mode = data.get("mode", "html")
 
         if not url:
             raise HTTPException(status_code=400, detail="URL is required")
 
-        # Create MCP request for scraping
         mcp_request = {
             "jsonrpc": "2.0",
             "id": str(asyncio.get_event_loop().time()),
@@ -247,7 +274,6 @@ async def scrape_endpoint(request: Request):
             "params": {"name": "fetch", "arguments": {"url": url, "mode": mode}},
         }
 
-        # Send to MCP and get response
         request_id = mcp_request["id"]
         response_queues[request_id] = asyncio.Queue()
 
