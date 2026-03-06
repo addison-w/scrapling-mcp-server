@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ARG CACHE_BUSTER=1
+
 # Install system dependencies for Scrapling (Playwright/Chromium)
 RUN apt-get update && apt-get install -y \
     curl \
