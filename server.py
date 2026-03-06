@@ -33,9 +33,9 @@ async def fetch_with_scrapling(
 ) -> str:
     """Fetch page content using scrapling."""
     try:
-        from scrapling import StealthFetcher
+        from scrapling import StealthyFetcher
 
-        fetcher = StealthFetcher()
+        fetcher = StealthyFetcher()
         page = fetcher.fetch(url)
 
         if mode == "markdown":
