@@ -2,7 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-ARG CACHE_BUSTER=2026-03-06-001
+ARG CACHE_BUSTER=2026-03-06-002
+ENV CACHE_BUSTER=${CACHE_BUSTER}
 
 RUN apt-get update && apt-get install -y \
     curl \
@@ -33,6 +34,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install playwright && playwright install chromium
 RUN python -c "from camoufox import install; install()" || echo "Camoufox install may take time on first run"
 
+RUN echo "Cache buster: ${CACHE_BUSTER}"
 COPY server.py .
 
 EXPOSE 8000
