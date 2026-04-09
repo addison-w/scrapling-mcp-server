@@ -11,6 +11,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 
 async def fetch_with_scrapling(
@@ -38,8 +39,15 @@ async def fetch_with_scrapling(
 
 # Create FastMCP instance.
 # streamable_http_path defaults to "/mcp", so the streamable HTTP endpoint
-# will be exposed at POST /mcp.
-mcp = FastMCP("scrapling-fetch-mcp")
+# will be exposed at POST /mcp. We disable DNS rebinding protection because
+# the server sits behind a Traefik reverse proxy that already filters hosts;
+# without this, requests with non-localhost Host headers get 421.
+mcp = FastMCP(
+    "scrapling-fetch-mcp",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    ),
+)
 
 
 @mcp.tool()
